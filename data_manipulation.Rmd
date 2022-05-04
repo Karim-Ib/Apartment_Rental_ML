@@ -1,0 +1,1373 @@
+---
+title: 'German Rental Advanced Analysis and predction Models Part 1: Feature Analysis
+  and Engeneering'
+output:
+  html_notebook: default
+  pdf_document: default
+---
+
+
+Based on the Kaggle immo_data dataset. More informations can be found here: https://www.kaggle.com/datasets/corrieaar/apartment-rental-offers-in-germany
+
+
+packages install
+```{r}
+mirror = "http://cran.us.r-project.org"
+#install.packages("moments", repos=mirror)
+#install.packages("ggplot2", repos=mirror)
+#install.packages("car", repos=mirror)
+#install.packages("MASS", repos=mirror)
+#install.packages("dummies", repos=mirror)
+```
+packages loads
+
+```{r}
+library("moments")
+library("ggplot2")
+library("car")
+library("MASS")
+library("dummies")
+```
+# Preparing the Data
+
+```{r}
+data_raw = read.csv('immo_data_raw.csv')
+head(data_raw)
+```
+Since I am interested in rental price predictions the first thing is to just drop all rows where this information is not given. One could impute these values one way or another but to keep the accuracy on the data as high as possible I am just going to removes these entries from the data.
+
+```{r}
+rental_na = which(is.na(data_raw$totalRent))
+removal_fraction = length(rental_na) / length(data_raw$totalRent)
+removal_fraction
+data_raw = data_raw[-rental_na, ]
+head(data_raw)
+```
+facilities and description columns may contain useful information for humans and can be the base for a complex deep learning model but have no value for my regression model so they get droped as well. 
+
+```{r}
+data_raw = subset(data_raw, select=-c(facilities, description))
+head(data_raw)
+
+```
+
+Lets have a look at the NA density of our features. 
+```{r}
+#no_nas = apply(data_raw, MARGIN=2, function(x) {sum(is.na(x))})
+no_nas = colSums(is.na(data_raw))
+na_density = no_nas / nrow(data_raw)
+na_density = na_density[order(na_density, decreasing = TRUE)]
+barplot(na_density, main="NA Density all", ylab="Density", space=0.5, 
+        col = rainbow(length(na_density)), cex.names = 0.5, las=2)
+
+```
+It looks like there are some features without any data missing. Lets take a closer look at the more relevant features with more NA values. 
+
+```{r}
+no_na = which(na_density == 0)
+many_na = na_density[-no_na]
+barplot(many_na, main="NA Density selected", ylab="Density", space=0.5,
+        col = rainbow(length(na_density)), cex.names = 0.5, las=2)
+
+```
+This is not looking too great. Many feature have a rather high NA density. As a rule of thumb I will try to impute features with a maximum NA density of 0.3. There are of course methods to impute way higher percentages but I dont want to spend too much time with advanced feature imputation methods(multiple imputations&regressions). 
+
+```{r}
+na_remove_cols = which(na_density >= 0.3)
+length(na_remove_cols)
+na_density[na_remove_cols]
+```
+
+There are 11 features in question. Before blindly removing them by the arbitrary cutoff of 0.3 lets take a quick look on the features and if we still might want to keep them due to importance.
+
+
+* telekomHybridUploadSpeed: probably not too important 
+* electricityBasePrice: sounds important but hard to guess
+* electricityKwhPrice: same as for the base price, we could probably find this information online but would involve too much searching
+* energyEfficiencyClass: as for the eletricity
+* lastRefurbish: this sounds important and should correlate to the price. We might want to keep it even tho alot of data is missing. 
+* heatingCosts: important aswell and correlates to the EfficencyClass sadly too hard to guess and averaging would probably introduce too much of an bias
+* noParkSpaces: prbably important, even more in non rural areas. We could assume that NA equals to no parkspaces and keep it. 
+* PetsAllowed: should not be too important especially since small pets are allowed by law anyways
+* thermalCHar: directly relates to energyclass! could replace the information lost by droping the other columns and with 0.41 not remotely as bad as the other features.
+* interiorQUal: seems important and also not too bad with ~0.39 missing values could just be imputed with "average condition"
+* numberofFloors: seems to have an impact aswell so lets keep it.
+
+To conclude it appears as if we should increase the "cutoff" to 0.4 to include most of the features discussed and include the ones above as exception. 
+
+```{r}
+
+data_raw = subset(data_raw, select=-c(telekomHybridUploadSpeed, 
+                                      electricityBasePrice, 
+                                      energyEfficiencyClass, 
+                                      heatingCosts, petsAllowed, electricityKwhPrice))
+head(data_raw)
+```
+
+# Feature and Target Analysis
+
+
+
+I now will go over all columns to gain more insight into the data. I will start with the target "totalRent". 
+
+```{r}
+target = data_raw$totalRent
+hist(target, freq=FALSE, col="blue", xlab="Total Rent")
+
+```
+Apparently we have some extreme outliers lets check them out. 
+
+```{r}
+target = sort(target, decreasing=TRUE)
+head(target, 10)
+tail(target, 10)
+```
+Lets note: we have some extreme high rents which seem erroneous (1234567) but also some really low values or even 0. In the next step I will find out with how many outliers we are dealing with.
+
+```{r}
+high_rents = which(target > 20000)
+low_rents = which(target < 200)
+length(high_rents)
+length(low_rents)
+```
+
+Around 700. Not too bad we can just leave them out without reducing our data set significantly. I decided that monthly rents above 20.000e and below 200 seem unreasonable. 
+
+```{r}
+remove_ind = c(high_rents, low_rents)
+target = target[-remove_ind]
+data_raw = data_raw[-remove_ind, ]
+```
+
+
+
+Lets check out the histogram again!
+
+```{r}
+hist(target, freq=FALSE, col="blue", xlab="Total Rent", breaks=100)
+xdist = seq(min(target), max(target), length=100)
+ydist = dnorm(xdist, mean(target), sd(target))
+lines(xdist, ydist, col="black", lwd=2)
+```
+
+
+Still not good enough to get an idea of how our target distribution looks like. Lets cut this down further.(even a rent of 10k/month is really high!) 
+
+```{r}
+remove_ind_2 = c(remove_ind_2, which(data_raw$totalRent < 200))
+target_rm2 = data_raw$totalRent[-remove_ind_2]
+hist(target_rm2, freq=FALSE, col="blue", xlab="Total Rent", breaks=100)
+xdist = seq(min(target_rm2), max(target_rm2), length=100)
+ydist = dnorm(xdist, mean(target_rm2), sd(target_rm2))
+lines(xdist, ydist, col="black", lwd=2)
+```
+```{r}
+qqnorm(target_rm2, pch=20, frame=FALSE, ylim=c(0, 10000))
+qqline(target_rm2, col="blue", lwd=2)
+```
+
+
+The distribution appears to be left skewed with a strong right tail. Lets get some statistics. 
+
+```{r}
+skew = skewness(target_rm2)
+kur = kurtosis(target_rm2)
+skew
+kur
+
+```
+
+
+Lets take a look on a logarithmic scale
+
+```{r}
+log_target = log1p(target_rm2)
+hist(log_target, freq=FALSE, col="blue", xlab="log(Total Rent)", breaks=100)
+xdist = seq(min(log_target), max(log_target), length=100)
+ydist = dnorm(xdist, mean(log_target), sd(log_target))
+lines(xdist, ydist, col="black", lwd=2)
+```
+
+
+```{r}
+skewness(log_target)
+kurtosis(log_target)
+```
+
+
+```{r}
+qqnorm(log_target, pch=20, frame=FALSE)
+qqline(log_target, col="blue", lwd=2)
+```
+Still not perfect but looks way better! Lets see if sqrt transform does any better.
+
+```{r}
+sqrt_target = sqrt(target_rm2)
+hist(sqrt_target, freq=FALSE, col="blue", xlab="sqrt(Total Rent)", breaks=300, xlim=c(0, 400))
+xdist = seq(min(sqrt_target), max(sqrt_target), length=100)
+ydist = dnorm(xdist, mean(sqrt_target), sd(sqrt_target))
+lines(xdist, ydist, col="black", lwd=2)
+```
+
+
+
+```{r}
+skewness(sqrt_target)
+kurtosis(sqrt_target)
+```
+
+Nah this looks worse! Lets bring the big guns and use a Box-Cox transform
+
+
+```{r}
+bc_model = MASS::boxcox((lm(target_rm2 ~ 1)))
+lambda = bc_model$x[which.max(bc_model$y)] 
+lambda
+
+  
+```
+
+Our perfect value for lambda is about -0.384! Lets transform 
+
+
+
+```{r}
+bc_target = (target_rm2 ** lambda - 1) / lambda
+hist(bc_target, freq=FALSE, col="blue", xlab="BC(Total Rent)", breaks=100)
+xdist = seq(min(bc_target), max(bc_target), length=100)
+ydist = dnorm(xdist, mean(bc_target), sd(bc_target))
+lines(xdist, ydist, col="black", lwd=2)
+
+```
+```{r}
+qqnorm(bc_target, pch=20, frame=FALSE)
+qqline(bc_target, col="blue", lwd=2)
+```
+
+
+```{r}
+skewness(bc_target)
+kurtosis(bc_target)
+
+```
+This looks promissing! Lets keep the log1p transformation in mind and use this one for now!
+
+```{r}
+#data_raw$totalRent = log1p(data_raw$totalRent)
+data_raw = data_raw[-remove_ind_2, ]
+data_raw$totalRent = bc_target
+
+```
+
+
+Lets now get over the features one by one, transform possibly categorical variables and fill in the NA's 
+
+
+```{r}
+names(data_raw)
+no_nas_updated = colSums(is.na(data_raw))
+row_nas = rowSums(is.na(data_raw))
+```
+
+
+### regio1
+
+```{r}
+temp = data_raw$regio1
+head(temp, 10)
+```
+
+regio1 appears to give information about the "Bundesland" - We can simply encode these. 
+```{r}
+unique(temp)
+```
+Good news! No NA's we have to deal with.
+
+```{r}
+which(is.na(temp))
+```
+
+lets convert to our dummy variable
+
+```{r}
+temp = as.numeric(as.character(factor(temp, labels = 1:length(unique(temp)))))
+
+hist(temp, col="blue", main="Histogram of Regio1", breaks=length(unique(temp))
+     , freq = FALSE, xlab="region 1")
+```
+
+```{r, fig.width=10, fig.height=7}
+boxplot(data_raw$totalRent~temp, col="blue", stroke="red", 
+        main="boxplot of regio1", xlab = "Region 1", ylab="Log(totalrent)")
+```
+
+```{r}
+data_raw$regio1 = temp
+```
+
+
+### regio2
+
+
+```{r}
+temp = data_raw$regio2
+head(temp, 10)
+```
+
+regio2 seems to narrow the geolocation further down to the city level. 
+
+```{r}
+length(unique(temp))
+```
+```{r}
+which(is.na(temp))
+```
+great no NA's here again. 
+
+```{r}
+temp = as.numeric(as.character(factor(temp, labels = 1:length(unique(temp)))))
+
+hist(temp, col="blue", main="Histogram of Regio2", breaks=50, freq = FALSE,
+     xlab="region2")
+```
+
+
+```{r}
+data_raw$regio2 = temp
+```
+
+### regio3
+
+
+
+```{r}
+temp = data_raw$regio3
+head(temp, 10)
+```
+
+regio2 seems to narrow the geolocation further down to the precise location.  
+
+```{r}
+length(unique(temp))
+```
+```{r}
+which(is.na(temp))
+```
+Due to the size of the data set I dont see that drilling down to this level will be beneficial since there are not too many points per location to go by. Thus we drop this column. 
+
+
+```{r}
+data_raw = subset(data_raw, selec=-c(regio3))
+```
+
+
+
+
+### servicecharge
+
+```{r}
+temp = data_raw$serviceCharge
+head(temp, 10)
+```
+
+These seem to be the side-costs for maintenence and service. 
+
+
+```{r}
+length(which(is.na(temp)))
+```
+
+It appears as if we still have some NA's here. I will impute the average over each regio1 for the missing values. 
+
+```{r}
+averages = aggregate(temp, list(data_raw$regio1), mean, na.rm=TRUE)
+
+
+
+for (i in which(is.na(temp))){
+  for (j in 1:length(unique(data_raw$regio1))){
+    if (data_raw$regio1[i] == j){
+      temp[i] = averages[j, 2]
+    }
+  }
+}
+
+sum(is.na(temp))
+```
+
+Now that we filled missing values lets plot them vs the rent
+
+```{r}
+plot(temp, data_raw$totalRent, type = "p", xlim = c(0, 1000), 
+     pch=20, col="darkblue", xlab="Service Cost", ylab="BC(Rent)")
+temp_model = lm(data_raw$totalRent~temp)
+abline(temp_model, col="red", lwd=2)
+```
+Note OLS linear regression is sensitive to outliers. -> use robust regression methods as propper model. (even tho it seems as if a linear model is not what we see here more like log)
+
+```{r}
+summary(temp_model)
+data_raw$serviceCharge = temp
+```
+
+### heatingtype
+
+
+
+```{r}
+temp = data_raw$heatingType
+head(temp, 10)
+```
+heatingType gives information about the heating -duh. Another Categorical Variable!
+
+```{r}
+unique(temp)
+sum(is.na(temp))
+```
+
+Since we dont know the heating we will introduce a new category "other" for the NA's. Another possibility it to use the most common heating.
+
+
+```{r}
+temp[is.na(temp)] = "other"
+temp = as.numeric(as.character(factor(temp, labels = 1:length(unique(temp)))))
+
+```
+
+
+```{r}
+hist(temp, las=2, freq = FALSE, col="blue", xlab="heating category",
+     main="HeatingType Histogram", breaks = length(unique(temp)))
+```
+We see that most buildings fall into the heating Category 1. Instead of introducing other we could have just assumed the NA's to be of the same type or randomly draw from the distribution. 
+To improve performance we might come back to this later. 
+
+
+```{r, fig.width=10, fig.height=7}
+boxplot(data_raw$totalRent~temp, col="blue", stroke="red", 
+        main="boxplot of heating type", xlab = "Heating", ylab="Log(totalrent)")
+```
+
+```{r}
+data_raw$heatingType = temp
+```
+
+
+
+### telekomTvOffer
+
+```{r}
+temp = data_raw$telekomTvOffer
+head(temp, 10)
+```
+
+
+```{r}
+unique(temp)
+```
+
+This features tells us about the telekom TV offers for the flat. it apparently has 4 possible values including NA. Lets look at the histogram fist before deciding what to do with NA's.
+
+```{r}
+plot(factor(temp, exclude=NULL), col="blue", main="TV offer")
+```
+
+
+We see that almost all buildings get the one year free option. This feature will probably not be too interesting but lets add the NA's to this category for now and decide later if we are going to use it or not. 
+
+```{r}
+temp[is.na(temp)] = "ONE_YEAR_FREE"
+temp = as.numeric(as.character(factor(temp, labels = 1:length(unique(temp)))))
+data_raw$telekomTvOffer = temp
+```
+
+
+### newlyConnst
+
+
+```{r}
+temp = data_raw$newlyConst
+head(temp, 10)
+```
+
+```{r}
+unique(temp)
+```
+
+This is great we do not have any NA's and this appears to be a bloolean Variable telling us if a building was newly constructed or not. Lets check the weight of the two categories. 
+
+```{r}
+plot(as.factor(temp), col="blue", main="construction category")
+```
+
+Apparently most buildings are not new, as was to be expected. I am just going to enncode this as True = 1 False = 0
+
+```{r}
+temp = ifelse(temp == FALSE, 0, 1)
+
+```
+
+```{r, fig.width=10, fig.height=7}
+boxplot(data_raw$totalRent~temp, col="blue", stroke="red", 
+        main="boxplot of construction", xlab = "new/old", 
+        ylab="Log(totalrent)")
+```
+The trend is that new flats rent for more then old ones. Not too surprising either. 
+
+
+```{r}
+data_raw$newlyConst = temp
+```
+
+
+### balcony
+
+```{r}
+temp = data_raw$balcony
+head(temp, 10)
+```
+
+```{r}
+unique(temp)
+```
+
+This feature is rather self explanatory. Boolean variable if a flat has a balcony or not. 
+
+
+```{r}
+plot(as.factor(temp), col="blue", xlab="balcony", ylab="number")
+```
+
+This is surprising! Most flats actually do have a balcony. Lets encode in the same fashion. 
+
+```{r}
+temp = ifelse(temp == FALSE, 0, 1)
+
+```
+
+```{r, fig.width=10, fig.height=7}
+boxplot(data_raw$totalRent~temp, col="blue", stroke="red", 
+        main="boxplot of balcony", xlab = "yes/no", ylab="Log(totalrent)")
+```
+This looks promising. Price for flats with a balcony are slightly higher in the log presentation as flats without. 
+
+
+```{r}
+data_raw$balcony = temp
+```
+
+
+### picturecount
+
+```{r}
+temp = data_raw$picturecount
+head(temp, 10)
+```
+
+The picturecount feature refers to the number of pictures of the flat in the expose listed. 
+
+
+```{r}
+sum(is.na(temp))
+```
+
+No missing data, great.
+
+```{r}
+hist(temp, col="blue", breaks = length(unique(temp)), main="Number of pictures", 
+     xlab="pictures", xlim=c(0, 60), freq=FALSE)
+xdist = seq(min(temp), max(temp), length=100)
+ydist = dnorm(xdist, mean(temp), sd(temp))
+lines(xdist, ydist, col="black", lwd=2)
+```
+The distribution does not quite follow a normal distirbution with a strong right tail and outliers at low values. 
+
+
+Lets see if our number of pictures is correlated to the BC(totalRent). As a meassure I am going to perform the Spearmans-Correlation-Test. This is somewhat to Pearsons correlation but describes not a linear but a monotonic relation. The Spearman correlation between two variables is equal to the Pearson correlation between the rank values of those two variables.
+
+
+```{r}
+corr_spear = cor.test(temp, data_raw$totalRent, method="spearman", exact=FALSE)
+corr_spear
+```
+
+With a p-value of about 0 we accept the alternative hypothesis. There is a positive correlation between the two variables. With a rho of ~0.29 the correlation is rather low. 
+
+
+
+### pricetrend
+
+
+
+```{r}
+temp = data_raw$pricetrend
+head(temp, 10)
+```
+This reflects a metric calculated by Immoscout. 
+
+```{r}
+sum(is.na(temp))
+```
+
+We do need to impute some values. To do so we will use the same strategy as employed for the servicecharge feature. 
+
+
+```{r}
+averages = aggregate(temp, list(data_raw$regio1), mean, na.rm=TRUE)
+
+
+
+for (i in which(is.na(temp))){
+  for (j in 1:length(unique(data_raw$regio1))){
+    if (data_raw$regio1[i] == j){
+      temp[i] = averages[j, 2]
+    }
+  }
+}
+
+sum(is.na(temp))
+```
+
+
+
+Lets visualize!
+
+```{r}
+hist(temp, col="blue", main="Pricetrend", xlab="trend index", freq=FALSE, breaks=50)
+xdist = seq(min(temp), max(temp), length=100)
+ydist = dnorm(xdist, mean(temp), sd(temp))
+lines(xdist, ydist, col="black", lwd=2)
+```
+This looks rather normal. Interesting!
+
+```{r}
+skewness(temp)
+```
+```{r}
+kurtosis(temp)
+```
+
+A bit left skewed and right tailed but thats something we can work with. 
+
+Lets see if the trend correlates with the price. 
+
+
+```{r}
+plot(temp, data_raw$totalRent, xlab="trend index", ylab="BC(totalRent)", col="darkblue", pch=20)
+temp_model = lm(data_raw$totalRent~temp)
+abline(temp_model, col="red", lwd=3)
+```
+```{r}
+summary(temp_model)
+```
+
+
+
+```{r}
+corr = cor.test(temp, data_raw$totalRent, method="pearson")
+corr
+```
+We do have some outliers but there is a medium(0.50) positive correlation between these two. 
+
+```{r}
+data_raw$pricetrend = temp
+```
+
+
+
+### telekomUploadSpeed
+
+```{r}
+temp = data_raw$telekomUploadSpeed
+head(temp, 10)
+```
+This feature should give information about the possible internet speed available at the location. 
+```{r}
+sum(is.na(temp))
+```
+
+We use the same imputation strategy. 
+
+
+```{r}
+averages = aggregate(temp, list(data_raw$regio1), mean, na.rm=TRUE)
+
+
+
+for (i in which(is.na(temp))){
+  for (j in 1:length(unique(data_raw$regio1))){
+    if (data_raw$regio1[i] == j){
+      temp[i] = averages[j, 2]
+    }
+  }
+}
+
+sum(is.na(temp))
+```
+
+```{r}
+hist(temp, col="blue", main="Internetspeed", xlab="Speed", freq=FALSE, breaks=length(unique(temp)))
+```
+
+
+```{r}
+unique(temp)
+```
+
+
+So most people have internetspeed of about 40 with some people below that and just a few people above. 
+
+```{r}
+data_raw$telekomUploadSpeed = temp
+```
+
+
+
+### yearConstructed
+
+
+```{r}
+temp = data_raw$yearConstructed
+head(temp, 10)
+```
+
+```{r}
+sum(is.na(temp)) / length(temp)  
+sum(is.na(temp))
+```
+So we have to impute data for roughly 22% of the buildings. Since I think the construction year does impact the rental cost strongly we have to be careful with the way how we impute them. 
+Instead of averaging over the regio1 data we will go the further step and average over regio2 since it is to be expected that buildings in the same area were built at roughly the same time.
+
+
+
+```{r}
+averages = aggregate(temp, list(data_raw$regio2), mean, na.rm=TRUE)
+
+
+
+for (i in which(is.na(temp))){
+  for (j in 1:length(unique(data_raw$regio2))){
+    if (data_raw$regio2[i] == j){
+      temp[i] = averages[j, 2]
+    }
+  }
+}
+
+sum(is.na(temp))
+```
+I am only interested in whole years(integers) so lets round them
+```{r}
+temp = round(temp)
+```
+
+Lets sneak a peak into the distribution
+
+```{r}
+hist(temp, col="blue", main="Buildingyear", xlab="Year", freq=FALSE, breaks=75,  xlim=c(1000, 2020))
+```
+So far nothing too surprising. 
+
+```{r}
+median(temp)
+```
+
+```{r}
+temp[temp<1500]
+```
+
+So apparently the median building year was 1970. Surprisingly there are actually quite many buildings from the year 1111 which I am rather suspicious about. After some online searches these buildings are clearly not over 1000 years old. I am just going to remove any house with an age over 500 which in my eyes is simply not realistic to encounter. 
+
+```{r}
+data_raw[which(data_raw$yearConstructed==1111),]
+head(sort(data_raw$yearConstructed), 50)
+
+```
+
+```{r}
+remove_ind = which(temp<1500)
+```
+
+
+```{r}
+temp = temp[-remove_ind]
+```
+
+
+```{r}
+cor.test(temp, data_raw$totalRent[-remove_ind])
+cor.test(temp, data_raw$totalRent[-remove_ind], method="spearman")
+```
+
+So we do have a slight positive correlation between the age and the rental price with a 50% stronger spearmans correlation then the pearson coefficient. This is up for interpretation which one we actually weigh higher. If we understand the buildingyear as categorical one might lean more onto the spearmans side with a correlation of about 0.31. This is still not strong but indicates a positive trend. 
+
+
+
+
+
+```{r}
+data_raw = data_raw[-remove_ind, ]
+data_raw$yearConstructed = temp
+```
+
+
+
+
+### scoutid
+
+```{r}
+temp = data_raw$scoutId
+head(temp, 10)
+```
+
+This appears to be the ID of the ad. Should not hold any meaning so we can drop it. 
+
+```{r}
+data_raw = subset(data_raw, select=-c(scoutId))
+```
+
+
+
+
+### noParkSpaces
+
+```{r}
+temp = data_raw$noParkSpaces
+head(temp, 10)
+```
+
+Here we see how many parkingspaces are connected to a given flat. One could assume that one - or even more - spaces would result in a higher rent! Since we already established that there are some NA values we will assume from here on that no information about a parkingspace means there is none. 
+
+```{r}
+unique(temp)
+```
+
+```{r}
+hist(temp[!is.na(temp)], breaks=500, col="blue", xlim=c(0, 30), xlab="no Spaces", main="parking lots per flat")
+```
+
+
+Apparently most flats with a parking space do have one. This is not surprising. More worrying is that we have some flats with double or even triple digits. This does not seem right lets see with how many samples we are dealing with.
+
+```{r}
+length(which(temp > 10))
+```
+
+483. Lets get rid of these extreme cases and fix the NA's
+
+```{r}
+remove_ind = which(temp > 10)
+temp = temp[-remove_ind]
+temp[is.na(temp)] = 0
+```
+
+
+Lets check out the distribution again 
+
+
+
+```{r}
+hist(temp, breaks=length(unique(temp)), col="blue", xlab="no Spaces", main="parking lots per flat")
+```
+
+So most flats do not come with a parking space. 
+
+
+```{r, fig.width=10, fig.height=7}
+boxplot(data_raw$totalRent[-remove_ind]~temp, col="blue", stroke="red", 
+        main="boxplot of noParkingSpaces", xlab = "no of lots", ylab="BC(totalrent)")
+```
+This confirms our assumption that in general flats with a parking lot are more expensive - even though there are of course flats with no parkingspace which are more expensive. 
+
+
+```{r}
+data_raw = data_raw[-remove_ind, ]
+data_raw$noParkSpaces = temp
+```
+
+
+
+### firingype
+
+
+
+```{r}
+temp = data_raw$firingTypes
+
+length(unique(temp))
+
+```
+```{r}
+sum(is.na(temp))
+```
+
+
+With 48k NA's and 120 different categories I will discard this feature for now. Grouping up 120 categories is of course possible but a lot of work and imputating roughly 50k entries does not seem to appealing to me as well. 
+
+```{r}
+data_raw = subset(data_raw, select=-c(firingTypes))
+```
+
+
+
+
+### haskitchen
+
+```{r}
+temp = data_raw$hasKitchen
+
+unique(temp)
+
+```
+
+
+```{r}
+sum(is.na(temp))
+```
+
+```{r}
+plot(as.factor(temp), col="blue", xlab="kitchen", ylab="number")
+```
+
+This is surprising! Most flats actually do not have a balcony. Lets encode.
+
+```{r}
+temp = ifelse(temp == FALSE, 0, 1)
+
+```
+
+```{r, fig.width=10, fig.height=7}
+boxplot(data_raw$totalRent~temp, col="blue", stroke="red", 
+        main="boxplot of kitchen", xlab = "yes/no", ylab="BC(totalrent)")
+```
+
+Flats with a kitchen are more expensive. This is not really suprising.
+
+```{r}
+data_raw$hasKitchen = temp
+```
+
+
+
+
+### geo_bln
+
+```{r}
+temp = data_raw$geo_bln 
+head(temp)
+```
+
+This appears to be a duplicate of regio_1 so lets skip over it
+
+```{r}
+data_raw = subset(data_raw, select=-c(geo_bln))
+```
+
+
+### cellar
+
+```{r}
+temp = data_raw$cellar
+unique(temp)
+```
+
+
+```{r}
+sum(is.na(temp))
+```
+
+```{r}
+plot(as.factor(temp), col="blue", xlab="cellar", ylab="number", main="Cellar")
+```
+
+
+
+So we do have more flats with a cellar. We would love to see these flats to be more expensive. 
+But first we follow our usual encoding strategy. 
+
+
+```{r}
+temp = ifelse(temp == FALSE, 0, 1)
+
+```
+
+```{r, fig.width=10, fig.height=7}
+boxplot(data_raw$totalRent~temp, col="blue", stroke="red", 
+        main="boxplot of cellar", xlab = "yes/no", ylab="BC(totalrent)")
+```
+This is odd. One would have expected a more drastic difference. 
+
+```{r}
+data_raw$cellar = temp
+```
+
+
+
+
+### yearConstructedRange
+
+```{r}
+temp = data_raw$yearConstructedRange
+head(temp, 20)
+unique(temp)
+```
+
+This feature bins the construction years into 10 different bins. I am not entirely sure what NA's mean in this szenario since all constructionyears are known as seen before. 
+
+
+
+```{r}
+plot(addNA(temp), col="blue", xlab="construction bin", ylab="number")
+```
+
+
+Since it is unclear how to interpret this feature we will leave this one out for now.
+
+```{r}
+data_raw = subset(data_raw, select=-c(yearConstructedRange))
+```
+
+
+
+### housenumber
+
+```{r}
+temp = data_raw$houseNumber
+head(temp, 10)
+sum(is.na(temp))
+```
+
+This column contains the housenumber of any given flat. This feature by itself is rather ambiguous and with 53k NA values I personally do not see any reason to keep it.
+
+```{r}
+data_raw = subset(data_raw, select=-c(houseNumber))
+```
+
+
+
+### livingspac
+
+```{r}
+temp = data_raw$livingSpace
+length(unique(temp))
+sum(is.na(temp))
+```
+
+
+This might be the single most important feature giving us the m^2 of the flat. Even better: we do not need to estimate any values since there are no NA's
+
+```{r}
+hist(temp, col="blue", main="Livingspace", xlab="m^2", freq=FALSE, breaks=10000, xlim = c(0, 500))
+```
+The distribution looks nice but we apparently do have some extreme outliers!(can be seen if we remove the xlim)
+
+
+```{r}
+head(sort(temp, decreasing = TRUE), 10)
+```
+Even tho there are some big flats having a living space of over 1000m^2 seems unrealistic for a FLAT. And since we are already looking at it lets see if we have some super low values aswell!
+
+
+```{r}
+head(sort(temp, decreasing = FALSE), 10)
+```
+Disappointing! But so be it. Lets remove them.
+
+
+```{r}
+remove_ind = which(temp > 1000 | temp < 5)
+length(remove_ind)
+```
+Only 60 thats not too bad. 
+
+```{r}
+temp = temp[-remove_ind]
+data_raw = data_raw[-remove_ind, ]
+data_raw$livingSpace = temp
+```
+
+
+Lets see if we have a nice relationship between the target and the livingspace. 
+
+```{r}
+plot(temp, data_raw$totalRent, xlab="m^2", ylab="BC(totalRent)", col="darkblue", pch=20, xlim=c(0, 300))
+temp_model = lm(data_raw$totalRent~temp)
+abline(temp_model, col="red", lwd=3)
+```
+
+
+
+```{r}
+summary(temp_model)
+```
+
+```{r}
+cor.test(temp, data_raw$totalRent)
+```
+
+A positive correlation of 0.72! Thats what we want to see. 
+
+
+
+
+
+### geo_krs
+
+
+```{r}
+temp = data_raw$geo_krs
+head(temp, 10)
+length(unique(data_raw$regio2))
+length(unique(temp))
+```
+
+This is another duplicate of the "regio" feature, in this case regio2. 
+
+```{r}
+data_raw = subset(data_raw, select=-c(geo_krs))
+```
+
+
+### condition
+
+
+```{r}
+temp = data_raw$condition
+head(temp, 10)
+```
+
+So the condition gives us an impression of the state of the flat. Lets see how many categories we have. 
+
+```{r}
+length(unique(temp))
+sum(is.na(temp))
+```
+
+11 Categories, thats good and with 56k NA's we could just impute them as the average category. 
+
+```{r}
+unique(temp)
+```
+
+Lets convert them into a dummy variable and order the ordinals from worst to best. 
+
+
+```{r}
+plot(addNA(temp), col="blue", main="condition distribution", cex.names=0.5 ,las=2)
+```
+Most flats ware well kept so lets assume most flats we dont know the status of are also well kept. 
+
+
+
+
+```{r}
+temp[is.na(temp)] = "well_kept"
+con_levels = c("ripe_for_demolition","need_of_renovation", "negotiable",
+               "refurbished","modernized","first_time_use_after_refurbishment",
+               "fully_renovated", "well_kept", "mint_condition",
+               "first_time_use")
+temp = factor(temp, ordered = TRUE, levels=con_levels)
+temp = as.numeric(temp)
+
+```
+
+```{r, fig.width=10, fig.height=7}
+boxplot(data_raw$totalRent~temp, col="blue", stroke="red", 
+        main="boxplot of conditions", xlab = "condition category", ylab="BC(totalrent)")
+```
+
+```{r}
+data_raw$condition = temp
+```
+
+
+### interiorqual
+
+
+
+```{r}
+temp = data_raw$interiorQual
+head(temp, 10)
+```
+The interiorqual is a categorical ordinal variable which gives information about the furnishing. 
+
+
+```{r}
+length(unique(temp))
+sum(is.na(temp))
+```
+
+```{r}
+unique(temp)
+```
+
+We apparently have 4 categories simple normal sophisticated and luxury. with 88k NA's. 
+
+
+
+
+
+```{r}
+plot(addNA(temp), col="blue", main="Interiorqual", cex.names=0.5 ,las=2)
+```
+
+
+
+This is surprising we have almost as many sophisticated flats as there are normal 
+flats. Since there is no clear cut category where we can just dump the NA's in and 
+averaging is not an option either I will draw for these NA's at random from 
+the distribution given. 
+
+
+
+
+```{r}
+cat_probs = c(length(temp[temp=='normal'& !is.na(temp)]) / (length(temp) - sum(is.na(temp))), 
+              length(temp[temp=='sophisticated'& !is.na(temp)]) / (length(temp) - sum(is.na(temp))), 
+              length(temp[temp=='simple'& !is.na(temp)]) / (length(temp) - sum(is.na(temp))), 
+              length(temp[temp=='luxury' & !is.na(temp)]) / (length(temp) - sum(is.na(temp))))
+fill_na = sample(c("normal","sophisticated","simple","luxury"), size=sum(is.na(temp)), replace=TRUE, prob = cat_probs)
+
+
+temp[is.na(temp)] = fill_na
+```
+
+
+
+
+
+```{r}
+plot(as.factor(temp), col="blue", xlab="qual", ylab="number", main="Cellar")
+```
+
+
+
+```{r, fig.width=10, fig.height=7}
+boxplot(data_raw$totalRent~temp, col="blue", stroke="red", 
+        main="boxplot of interior quality", xlab = "quality category", ylab="BC(totalrent)")
+```
+so the tendency is that luxury and sophisticated flats are more expensive then normal or simple ones. This reflects the intuitive guess. 
+
+```{r}
+temp = as.numeric(as.character(factor(temp, labels = 1:length(unique(temp)))))
+data_raw$interiorQual = temp
+```
+
+
+### street
+
+```{r}
+temp = data_raw$street
+head(temp, 10)
+sum(temp=='no_information')
+```
+So this is basically simmilar to regio3 where we narrow down the geo location to the street level. We will abandon this feature for same reasons.
+
+```{r}
+data_raw = subset(data_raw, select=-c(street))
+```
+
+
+
+
+### streetplain
+
+```{r}
+temp = data_raw$streetPlain
+head(temp, 10)
+```
+
+Same Information same reasoning. 
+
+
+
+```{r}
+data_raw = subset(data_raw, select=-c(streetPlain))
+```
+
+
+
+
+### lift
+
+
+```{r}
+temp = data_raw$lift
+sum(is.na(temp))
+```
+This is a categorical feature telling us about the existence of an elevator. 
+
+
+
+```{r}
+plot(as.factor(temp), col="blue", xlab="lift category", ylab="number", main="Lift")
+```
+So most flats actually do not have an elevator. 
+
+We follow our usual encoding strategy. 
+
+
+```{r}
+temp = ifelse(temp == FALSE, 0, 1)
+
+```
+
+```{r, fig.width=10, fig.height=7}
+boxplot(data_raw$totalRent~temp, col="blue", stroke="red", 
+        main="boxplot of lift", xlab = "yes/no", ylab="BC(totalrent)")
+```
+
+
+Flats with a lift do indeed cost more! 
+
+```{r}
+data_raw$lift = temp
+```
+
+
+
+### typeofflat
+
+
+```{r}
+temp = data_raw$typeOfFlat
+head(temp, 10)
+```
+
+This tells us about the kind of flat we are dealing with. 
+
+
+```{r}
+unique(temp)
+sum(is.na(temp))
+
+```
+
+So we have 10 different flat categories plus about 8% NA's. 
+
+
+```{r}
+plot(as.factor(temp), col="blue", xlab="category", ylab="number", main="Flat Type", las=2, cex.names=0.5)
+```
+
+
+So most flats are apartments. We do have some options for imputating here. 
+* add all to the apparments category
+* add all to the others category
+* remove them from the data set
+* draw again from the distribution 
+
+
+
+I will go with the distribution method again. 
+
+
+
+
+
+
+
+
+
+
+
+
